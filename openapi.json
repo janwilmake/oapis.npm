@@ -1,0 +1,380 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Minimal NPM Registry API",
+    "description": "A minimal NPM-compatible registry API that supports package installation",
+    "version": "1.0.0",
+    "contact": {
+      "name": "API Support",
+      "url": "https://npm.oapis.org/support"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://npm.oapis.org",
+      "description": "Production server"
+    }
+  ],
+  "paths": {
+    "/{package}": {
+      "get": {
+        "summary": "Get package metadata",
+        "description": "Returns the metadata for a package, including all versions, tags, and distribution information",
+        "operationId": "getPackageMetadata",
+        "parameters": [
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Name of the package",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "express"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackageMetadata"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Package not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/{package}/-/{package}-{version}.tgz": {
+      "get": {
+        "summary": "Download package tarball",
+        "description": "Downloads the tarball for a specific version of a package",
+        "operationId": "getPackageTarball",
+        "parameters": [
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Name of the package",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "express"
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Version of the package",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "4.17.1"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Package or version not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/{scope}/{package}": {
+      "get": {
+        "summary": "Get scoped package metadata",
+        "description": "Returns the metadata for a scoped package, including all versions, tags, and distribution information",
+        "operationId": "getScopedPackageMetadata",
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "path",
+            "description": "Scope of the package (without the @ symbol)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "babel"
+          },
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Name of the package",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "core"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackageMetadata"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Package not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/{scope}/{package}/-/{package}-{version}.tgz": {
+      "get": {
+        "summary": "Download scoped package tarball",
+        "description": "Downloads the tarball for a specific version of a scoped package",
+        "operationId": "getScopedPackageTarball",
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "path",
+            "description": "Scope of the package (without the @ symbol)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "babel"
+          },
+          {
+            "name": "package",
+            "in": "path",
+            "description": "Name of the package",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "core"
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Version of the package",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "7.12.3"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Package or version not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "PackageMetadata": {
+        "type": "object",
+        "properties": {
+          "_id": {
+            "type": "string",
+            "description": "Package name",
+            "example": "express"
+          },
+          "_rev": {
+            "type": "string",
+            "description": "Registry revision",
+            "example": "1032-a23f5b7c8d9e0f"
+          },
+          "name": {
+            "type": "string",
+            "description": "Package name",
+            "example": "express"
+          },
+          "description": {
+            "type": "string",
+            "description": "Package description",
+            "example": "Fast, unopinionated, minimalist web framework"
+          },
+          "dist-tags": {
+            "type": "object",
+            "description": "Distribution tags",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "example": {
+              "latest": "4.17.1",
+              "next": "5.0.0-alpha.8"
+            }
+          },
+          "versions": {
+            "type": "object",
+            "description": "Available versions",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/VersionInfo"
+            }
+          },
+          "time": {
+            "type": "object",
+            "description": "Timestamps for versions",
+            "additionalProperties": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "example": {
+              "created": "2010-01-15T22:13:30.000Z",
+              "modified": "2023-09-20T18:45:12.000Z",
+              "4.17.1": "2019-05-26T04:25:30.000Z"
+            }
+          },
+          "readme": {
+            "type": "string",
+            "description": "Package readme",
+            "example": "# Express\n\nFast, unopinionated, minimalist web framework for Node.js..."
+          }
+        }
+      },
+      "VersionInfo": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Package name",
+            "example": "express"
+          },
+          "version": {
+            "type": "string",
+            "description": "Package version",
+            "example": "4.17.1"
+          },
+          "description": {
+            "type": "string",
+            "description": "Package description",
+            "example": "Fast, unopinionated, minimalist web framework"
+          },
+          "main": {
+            "type": "string",
+            "description": "Main entry point",
+            "example": "index.js"
+          },
+          "scripts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "example": {
+              "test": "mocha --require test/support/env --reporter spec --bail --check-leaks test/",
+              "lint": "eslint ."
+            }
+          },
+          "dependencies": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "example": {
+              "accepts": "~1.3.7",
+              "array-flatten": "1.1.1",
+              "body-parser": "1.19.0",
+              "content-disposition": "0.5.3"
+            }
+          },
+          "devDependencies": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "example": {
+              "after": "0.8.2",
+              "connect-redis": "3.4.1",
+              "eslint": "2.13.1"
+            }
+          },
+          "dist": {
+            "type": "object",
+            "properties": {
+              "shasum": {
+                "type": "string",
+                "description": "SHA-1 sum of the tarball",
+                "example": "af8080a7290ab69057589a7f82990c2d245151e3"
+              },
+              "tarball": {
+                "type": "string",
+                "format": "uri",
+                "description": "URL to download the tarball",
+                "example": "https://npm.oapis.org/express/-/express-4.17.1.tgz"
+              }
+            }
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Error code",
+            "example": "not_found"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Error explanation",
+            "example": "package not found"
+          }
+        }
+      }
+    }
+  }
+}
