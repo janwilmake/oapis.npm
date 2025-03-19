@@ -7,7 +7,7 @@ You can use it for any domain that has an `openapi.json` at the root.
 To set this up, first you need to instruct npm (or yarn/pnpm, etc) to install anything from the @oapis scope via our server:
 
 ```sh
-npm config set @oapis:registry https://npm.oapis.org
+npm config set @oapis:registry https://npm.oapis.org --location=project
 ```
 
 Now, any OpenAPI SDK can be installed using:
