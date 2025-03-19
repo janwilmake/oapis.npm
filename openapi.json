@@ -16,7 +16,7 @@
     }
   ],
   "paths": {
-    "/{package}": {
+    "/@oapis/{package}": {
       "get": {
         "summary": "Get package metadata",
         "description": "Returns the metadata for a package, including all versions, tags, and distribution information",
@@ -57,7 +57,7 @@
         }
       }
     },
-    "/{package}/-/{package}-{version}.tgz": {
+    "/@oapis/{package}/-/{package}-{version}.tgz": {
       "get": {
         "summary": "Download package tarball",
         "description": "Downloads the tarball for a specific version of a package",
@@ -109,7 +109,7 @@
         }
       }
     },
-    "/{scope}/{package}": {
+    "/@oapis/{scope}/{package}": {
       "get": {
         "summary": "Get scoped package metadata",
         "description": "Returns the metadata for a scoped package, including all versions, tags, and distribution information",
@@ -160,7 +160,7 @@
         }
       }
     },
-    "/{scope}/{package}/-/{package}-{version}.tgz": {
+    "/@oapis/{scope}/{package}/-/{package}-{version}.tgz": {
       "get": {
         "summary": "Download scoped package tarball",
         "description": "Downloads the tarball for a specific version of a scoped package",

@@ -1,0 +1,12 @@
+name = "oapis_npm"
+main = "main.ts"
+dev.port = 3000
+compatibility_date = "2025-03-13"
+
+routes = [
+  { pattern = "npm.oapis.org", custom_domain = true }
+]
+
+[[kv_namespaces]]
+binding = "OAPIS_KV"
+id = "f3a4a75e22af446a87f51a1a406d4aec"

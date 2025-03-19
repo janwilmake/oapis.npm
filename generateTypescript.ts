@@ -1,4 +1,10 @@
-import { OpenapiDocument, Operation, Parameter, JSONSchema } from "./types";
+import {
+  OpenapiDocument,
+  Operation,
+  Parameter,
+  JSONSchema,
+  OperationDetails,
+} from "./types";
 
 function getBaseUrl(openapiUrl: string, server?: { url: string }): string {
   // Try to get base URL from servers array first
@@ -93,12 +99,11 @@ function jsonSchemaToTS(schema: JSONSchema, indentLevel = 1): string {
 
 export function generateTypeScript(
   openapi: OpenapiDocument,
-  method: string,
-  operation: Operation,
-  path: string,
+  details: OperationDetails,
   openapiUrl: string,
   isExported?: boolean,
 ): string {
+  const { method, operation, operationId, path } = details;
   const baseUrl = getBaseUrl(
     openapiUrl,
     operation.servers?.[0] || openapi.servers?.[0],

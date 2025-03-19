@@ -3,9 +3,218 @@ import {
   OperationDetails,
   Operation,
   PathItem,
-  Server,
 } from "./types";
 import { generateTypeScript } from "./generateTypescript";
+import { stripTypes } from "./stripTypes";
+import { TarWriter } from "@gera2ld/tarjs";
+
+type Env = {
+  OAPIS_KV: KVNamespace;
+};
+
+/**
+ * Main worker function
+ */
+export default {
+  async fetch(request: Request, env: Env, ctx: any): Promise<Response> {
+    const url = new URL(request.url);
+    const pathParts = decodeURIComponent(url.pathname).split("/").slice(2);
+
+    // Handle different route patterns
+    if (pathParts.length === 0) {
+      return new Response("npm.oapis.org - OpenAPI-based npm registry", {
+        status: 200,
+      });
+    }
+
+    console.log({ pathParts });
+    try {
+      // Case 1: /{package} - Get package metadata
+      if (pathParts.length === 1) {
+        const packageName = pathParts[0];
+        return await handlePackageMetadata(env, packageName);
+      }
+
+      // Case 2: /{scope}/{package} - Get scoped package metadata
+      if (pathParts.length === 2) {
+        const scope = pathParts[0];
+        const packageName = pathParts[1];
+        return await handlePackageMetadata(env, scope, packageName);
+      }
+
+      // Case 3: /{package}/-/{package}-{version}.tgz - Download package tarball
+      if (
+        pathParts.length === 3 &&
+        pathParts[1] === "-" &&
+        pathParts[2].endsWith(".tgz")
+      ) {
+        const packageName = pathParts[0];
+        const versionFilename = pathParts[2];
+        const version = versionFilename.slice(packageName.length + 1, -4); // Extract version
+        return await handlePackageTarball(packageName, version, env);
+      }
+
+      // Case 4: /{scope}/{package}/-/{package}-{version}.tgz - Download scoped package tarball
+      if (
+        pathParts.length === 4 &&
+        pathParts[2] === "-" &&
+        pathParts[3].endsWith(".tgz")
+      ) {
+        const scope = pathParts[0];
+        const packageName = pathParts[1];
+        const versionFilename = pathParts[3];
+        const version = versionFilename.slice(packageName.length + 1, -4); // Extract version
+        return await handlePackageTarball(
+          scope + "/" + packageName,
+          version,
+          env,
+        );
+      }
+
+      return new Response("Not found", { status: 404 });
+    } catch (error) {
+      console.error("Error handling request:", error);
+      return new Response("Internal server error", { status: 500 });
+    }
+  },
+};
+/**
+ * Creates a tarball from an array of files, compresses it with gzip, and calculates its SHA1 hash
+ */
+async function generatePackageTarballWithShasum(
+  files: Array<{ name: string; content: string }>,
+) {
+  try {
+    // Create a TarWriter instance
+    const writer = new TarWriter();
+
+    // Add each file to the tarball
+    for (const file of files) {
+      const { name, content } = file;
+
+      // Handle string or binary content appropriately
+      if (typeof content === "string") {
+        writer.addFile(name, content);
+      } else if (
+        (content as any) instanceof ArrayBuffer ||
+        (content as any) instanceof Uint8Array
+      ) {
+        writer.addFile(name, content);
+      } else {
+        // For other content types, try to convert to string
+        writer.addFile(name, String(content));
+      }
+    }
+
+    // Write the tarball to a Blob
+    const tarBlob = await writer.write();
+
+    // Convert the tar Blob to an ArrayBuffer
+    const tarBuffer = await tarBlob.arrayBuffer();
+
+    // Compress the tar with gzip
+    // Note: In Cloudflare Workers, you can use the CompressionStream API
+    const gzipStream = new CompressionStream("gzip");
+    const readableStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(tarBuffer));
+        controller.close();
+      },
+    });
+
+    const compressedStream = readableStream.pipeThrough(gzipStream);
+    const compressedResponse = new Response(compressedStream);
+    const tarballBuffer = await compressedResponse.arrayBuffer();
+
+    // Calculate SHA1 hash using Web Crypto API
+    const hashBuffer = await crypto.subtle.digest("SHA-1", tarballBuffer);
+
+    // Convert the hash to a hex string
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const shasum = hashArray
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+
+    // Return an object with the tarball ArrayBuffer and shasum
+    return {
+      files,
+      tarballBuffer,
+      shasum,
+    };
+  } catch (error) {
+    console.error("Error generating tarball:", error);
+    throw error;
+  }
+}
+/**
+ * Creates a tarball Response from an ArrayBuffer
+ */
+export function createTarballResponse(
+  buffer: ArrayBuffer,
+  filename = "archive.tar",
+) {
+  // Return the Response with the ArrayBuffer
+  return new Response(buffer, {
+    headers: {
+      "Content-Type": "application/gzip", // Changed from application/x-tar to application/gzip
+      "Content-Disposition": `attachment; filename="${filename}"`,
+    },
+  });
+}
+
+/**
+ * Generate and store package tarball
+ */
+async function generateAndStorePackageTarball(
+  packageName: string,
+  version: string,
+  files: Array<{ name: string; content: string }>,
+  env: Env,
+): Promise<{ shasum: string; tarballKey: string }> {
+  // Generate the tarball
+  const { tarballBuffer, shasum } = await generatePackageTarballWithShasum(
+    files,
+  );
+
+  // Create a unique key for KV storage
+  const tarballKey = `tarball:${packageName}:${version}`;
+  console.log({ shasum });
+  // Store the ArrayBuffer directly in KV with TTL of 60 seconds
+  await env.OAPIS_KV.put(tarballKey, tarballBuffer, {
+    expirationTtl: 60,
+    metadata: { shasum },
+  });
+
+  return { shasum, tarballKey };
+}
+
+/**
+ * Handle package tarball request
+ */
+async function handlePackageTarball(
+  packageName: string,
+  version: string,
+  env: Env,
+): Promise<Response> {
+  try {
+    // Try to find the tarball metadata first
+    // Use the most recent stored tarball
+    const value = await env.OAPIS_KV.get(
+      `tarball:${packageName}:${version}`,
+      "arrayBuffer",
+    );
+
+    if (value) {
+      return createTarballResponse(value, `${packageName}-${version}.tgz`);
+    }
+
+    return new Response("Error serving package tarball", { status: 500 });
+  } catch (error) {
+    console.error("Error serving package tarball:", error);
+    return new Response("Error serving package tarball", { status: 500 });
+  }
+}
+
 /**
  * Core utility functions
  */
@@ -96,143 +305,14 @@ const getOperations = (openapi: OpenapiDocument): OperationDetails[] => {
 };
 
 /**
- * Generate scoped package metadata
+ * Generate files array for package
  */
-const generateScopedPackageMetadata = (
-  scope: string,
+async function generatePackageFiles(
   packageName: string,
-  operation: Operation,
   openapi: OpenapiDocument,
-): any => {
-  const fullName = `@${scope}/${packageName}`;
-  const description =
-    operation.description ||
-    operation.summary ||
-    `Generated from ${openapi.info.title}`;
-  const version = "1.0.0"; // Default version
-
-  return {
-    _id: fullName,
-    _rev: `1-${Date.now().toString(16)}`,
-    name: fullName,
-    description,
-    "dist-tags": {
-      latest: version,
-    },
-    versions: {
-      [version]: {
-        name: fullName,
-        version,
-        description,
-        main: "index.js",
-        scripts: {
-          test: 'echo "Error: no test specified" && exit 1',
-        },
-        dependencies: {},
-        dist: {
-          shasum: generateShasum(packageName),
-          tarball: `https://npm.oapis.org/${scope}/${packageName}/-/${packageName}-${version}.tgz`,
-        },
-      },
-    },
-    time: {
-      created: new Date().toISOString(),
-      modified: new Date().toISOString(),
-      [version]: new Date().toISOString(),
-    },
-    readme: `# ${fullName}\n\n${description}`,
-  };
-};
-
-async function generateTarball(
-  files: { name: string; content: string }[],
-): Promise<Uint8Array> {
-  // Simple tar header creation (512 bytes per header)
-  function createTarHeader(filename: string, size: number): Uint8Array {
-    const header = new Uint8Array(512);
-    const encoder = new TextEncoder();
-
-    // Set filename - field at offset 0, 100 bytes
-    const filenameBytes = encoder.encode(filename);
-    header.set(filenameBytes.slice(0, 100), 0);
-
-    // Set file mode (default permissions) - field at offset 100, 8 bytes
-    const modeBytes = encoder.encode("0000644 ");
-    header.set(modeBytes, 100);
-
-    // Set file size in octal - field at offset 124, 12 bytes
-    const sizeString = size.toString(8).padStart(11, "0") + " ";
-    const sizeBytes = encoder.encode(sizeString);
-    header.set(sizeBytes, 124);
-
-    // Set last modification time - field at offset 136, 12 bytes
-    const timeString =
-      Math.floor(Date.now() / 1000)
-        .toString(8)
-        .padStart(11, "0") + " ";
-    const timeBytes = encoder.encode(timeString);
-    header.set(timeBytes, 136);
-
-    // Set typeflag (normal file) - field at offset 156, 1 byte
-    header[156] = 48; // ASCII '0'
-
-    // Calculate and set checksum - field at offset 148, 8 bytes
-    let checksum = 0;
-    for (let i = 0; i < 512; i++) {
-      checksum += header[i];
-    }
-    const checksumString = checksum.toString(8).padStart(6, "0") + "\0 ";
-    const checksumBytes = encoder.encode(checksumString);
-    header.set(checksumBytes, 148);
-
-    return header;
-  }
-
-  // Calculate total size for the resulting tarball
-  let totalSize = 0;
-  for (const file of files) {
-    // Header (512 bytes) + content size rounded up to multiple of 512
-    const contentSize = new TextEncoder().encode(file.content).length;
-    const paddedContentSize = Math.ceil(contentSize / 512) * 512;
-    totalSize += 512 + paddedContentSize;
-  }
-
-  // Add 1024 bytes for end marker
-  totalSize += 1024;
-
-  // Create result buffer
-  const result = new Uint8Array(totalSize);
-  let offset = 0;
-
-  // Add each file
-  for (const file of files) {
-    const contentBytes = new TextEncoder().encode(file.content);
-    const header = createTarHeader(file.name, contentBytes.length);
-
-    // Add header
-    result.set(header, offset);
-    offset += 512;
-
-    // Add content
-    result.set(contentBytes, offset);
-    offset += contentBytes.length;
-
-    // Pad to multiple of 512 bytes
-    offset = Math.ceil(offset / 512) * 512;
-  }
-
-  // End with two empty blocks
-  return result;
-}
-
-/**
- * Generate package tarball
- */
-const generatePackageTarball = async (
-  packageName: string,
   operations: OperationDetails[],
   openapiUrl: string,
-): Promise<Uint8Array> => {
+): Promise<Array<{ name: string; content: string }>> {
   // Create the files for the tarball
   const files: { name: string; content: string }[] = [];
 
@@ -240,7 +320,7 @@ const generatePackageTarball = async (
   const packageJson = {
     name: packageName,
     version: "1.0.0",
-    description: "Generated API client",
+    description: `API client for ${openapi.info.title}`,
     main: "index.js",
     scripts: {
       test: 'echo "Error: no test specified" && exit 1',
@@ -256,7 +336,7 @@ const generatePackageTarball = async (
   });
 
   // Add README.md
-  const readme = `# ${packageName}\n\n${"Generated API client"}`;
+  const readme = `# ${packageName}\n\nGenerated API client for ${openapi.info.title}`;
 
   files.push({
     name: "package/README.md",
@@ -264,158 +344,31 @@ const generatePackageTarball = async (
   });
 
   const typescript = operations
-    .map((operation) => generateTypeScript(operation.operation, openapiUrl))
+    .map((operation) => generateTypeScript(openapi, operation, openapiUrl))
     .join("\n");
   // Add index.js - generate TypeScript and strip types
 
   files.push({
     name: "package/index.js",
-    content: stripTypes(typescript),
+    content: await stripTypes(typescript),
   });
 
-  // Generate the tarball
-  return await generateTarball(files);
-};
+  return files;
+}
 
-/**
- * Generate scoped package tarball
- */
-const generateScopedPackageTarball = async (
-  scope: string,
-  packageName: string,
-  version: string,
-  operation: Operation,
-  openapiUrl: string,
-): Promise<Uint8Array> => {
-  // Create the files for the tarball
-  const files: { name: string; content: string }[] = [];
-
-  const fullName = `@${scope}/${packageName}`;
-
-  // Add package.json
-  const packageJson = {
-    name: fullName,
-    version,
-    description:
-      operation.description || operation.summary || "Generated API client",
-    main: "index.js",
-    scripts: {
-      test: 'echo "Error: no test specified" && exit 1',
-    },
-    dependencies: {},
-    author: "npm.oapis.org",
-    license: "MIT",
-  };
-
-  files.push({
-    name: "package/package.json",
-    content: JSON.stringify(packageJson, null, 2),
-  });
-
-  // Add README.md
-  const readme = `# ${fullName}\n\n${
-    operation.description || operation.summary || "Generated API client"
-  }`;
-
-  files.push({
-    name: "package/README.md",
-    content: readme,
-  });
-
-  // Add index.js - generate TypeScript and strip types
-  const typescript = generateTypeScript(operation, openapiUrl);
-
-  files.push({
-    name: "package/index.js",
-    content: stripTypes(typescript),
-  });
-
-  // Generate the tarball
-  return await generateTarball(files);
-};
-
-/**
- * Utility functions
- */
-const generateShasum = (input: string): string => {
-  // In a real implementation, you'd generate a real SHA-1 hash
-  // For now, we'll just return a placeholder
-  return Array.from(Array(40), () =>
-    Math.floor(Math.random() * 16).toString(16),
-  ).join("");
-};
-
-/**
- * Main worker function
- */
-export default {
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    const pathParts = url.pathname.split("/").filter(Boolean);
-
-    // Handle different route patterns
-    if (pathParts.length === 0) {
-      return new Response("npm.oapis.org - OpenAPI-based npm registry", {
-        status: 200,
-      });
-    }
-
-    try {
-      // Case 1: /{package} - Get package metadata
-      if (pathParts.length === 1) {
-        const packageName = pathParts[0];
-        return await handlePackageMetadata(packageName);
-      }
-      // Case 2: /{scope}/{package} - Get scoped package metadata
-      if (pathParts.length === 2) {
-        const scope = pathParts[0];
-        const packageName = pathParts[1];
-        return await handleScopedPackageMetadata(scope, packageName);
-      }
-
-      // Case 3: /{package}/-/{package}-{version}.tgz - Download package tarball
-      if (
-        pathParts.length === 3 &&
-        pathParts[1] === "-" &&
-        pathParts[2].endsWith(".tgz")
-      ) {
-        const packageName = pathParts[0];
-        const versionFilename = pathParts[2];
-        const version = versionFilename.slice(packageName.length + 1, -4); // Extract version
-        return await handlePackageTarball(packageName, version);
-      }
-
-      // Case 4: /{scope}/{package}/-/{package}-{version}.tgz - Download scoped package tarball
-      if (
-        pathParts.length === 4 &&
-        pathParts[2] === "-" &&
-        pathParts[3].endsWith(".tgz")
-      ) {
-        const scope = pathParts[0];
-        const packageName = pathParts[1];
-        const versionFilename = pathParts[3];
-        const version = versionFilename.slice(packageName.length + 1, -4); // Extract version
-        return await handleScopedPackageTarball(scope, packageName, version);
-      }
-
-      return new Response("Not found", { status: 404 });
-    } catch (error) {
-      console.error("Error handling request:", error);
-      return new Response("Internal server error", { status: 500 });
-    }
-  },
-};
-
-async function handlePackageMetadata(packageName: string): Promise<Response> {
-  // 1. Fetch OpenAPI spec from the domain that matches the package name
-  const normalizedPackageName = getOperationId(packageName);
-  const openapi = await fetchOpenApiForDomain(normalizedPackageName);
+async function handlePackageMetadata(
+  env: Env,
+  domain: string,
+  operationId?: string,
+): Promise<Response> {
+  // 1. Fetch OpenAPI spec from the scope domain
+  const openapi = await fetchOpenApiForDomain(domain);
 
   if (!openapi) {
     return new Response(
       JSON.stringify({
         error: "not_found",
-        reason: "package not found - no OpenAPI spec available",
+        reason: "package not found - no OpenAPI spec available for scope",
       }),
       {
         status: 404,
@@ -424,42 +377,77 @@ async function handlePackageMetadata(packageName: string): Promise<Response> {
     );
   }
 
-  // 2. Get all operations from the OpenAPI spec
+  // 2. Get the operation matching the package name
+
   const operations = getOperations(openapi);
+  const operationsHere = operationId
+    ? [
+        operations.find(
+          (x) =>
+            x.operationId.toLowerCase() ===
+            getOperationId(operationId).toLowerCase(),
+        ),
+      ].filter((x) => !!x)
+    : operations;
 
-  // 3. For non-scoped packages, we now return a single version that includes all operations
-  const version = "1.0.0"; // Single version
+  if (operationsHere.length === 0) {
+    return new Response(
+      JSON.stringify({
+        error: "not_found",
+        reason: "operation not found for package name",
+      }),
+      {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }
 
+  const version = "1.0.0";
+  const fullName = operationId ? `@${domain}/${operationId}` : domain;
+
+  // 3. Generate files for the tarball
+  const files = await generatePackageFiles(
+    domain,
+    openapi,
+    operationsHere,
+    openapi.servers?.[0]?.url || `https://${domain}`,
+  );
+
+  // 4. Generate and store the tarball, getting the shasum
+  const { shasum, tarballKey } = await generateAndStorePackageTarball(
+    fullName,
+    version,
+    files,
+    env,
+  );
+
+  // 5. Generate metadata for the specific operation
   const metadata = {
-    _id: packageName,
+    _id: fullName,
     _rev: `1-${Date.now().toString(16)}`,
-    name: packageName,
-    description: `API client for ${openapi.info.title}`,
+    name: fullName,
+    description: `Generated from ${openapi.info.title}`,
     "dist-tags": {
       latest: version,
     },
     versions: {
       [version]: {
-        name: packageName,
+        name: fullName,
         version,
-        description: `Complete API client for ${openapi.info.title}`,
+        description: `Generated from ${openapi.info.title}`,
         main: "index.js",
         scripts: {
           test: 'echo "Error: no test specified" && exit 1',
         },
         dependencies: {},
-        // Include information about all operations in the package
-        operations: operations.map((details) => ({
-          id: details.operationId,
-          method: details.method,
-          path: details.path,
-          summary: details.operation.summary || "",
-          description: details.operation.description || "",
-        })),
         dist: {
-          shasum: generateShasum(packageName),
-          tarball: `https://npm.oapis.org/${packageName}/-/${packageName}-${version}.tgz`,
+          shasum,
+          tarball: `https://npm.oapis.org/@oapis/${fullName}/-/${
+            operationId || domain
+          }-${version}.tgz`,
         },
+        _tarballKey: tarballKey, // Store the tarball key for retrieval
       },
     },
     time: {
@@ -467,161 +455,11 @@ async function handlePackageMetadata(packageName: string): Promise<Response> {
       modified: new Date().toISOString(),
       [version]: new Date().toISOString(),
     },
-    readme: `# ${packageName}\n\nGenerated API client for ${
-      openapi.info.title
-    }\n\n## Included Operations\n\n${Object.keys(operations)
-      .map((operationId) => `- ${operationId}`)
-      .join("\n")}`,
+    readme: `# ${fullName}\n\nGenerated from ${openapi.info.title}`,
   };
 
   return new Response(JSON.stringify(metadata, undefined, 2), {
     status: 200,
     headers: { "Content-Type": "application/json" },
-  });
-}
-
-async function handlePackageTarball(
-  packageName: string,
-  version: string,
-): Promise<Response> {
-  // 1. Fetch OpenAPI spec
-  const normalizedPackageName = getOperationId(packageName);
-  const openapi = await fetchOpenApiForDomain(normalizedPackageName);
-
-  if (!openapi) {
-    return new Response(
-      JSON.stringify({
-        error: "not_found",
-        reason: "package not found - no OpenAPI spec available",
-      }),
-      {
-        status: 404,
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-  }
-
-  // 2. Get all operations
-  const operations = getOperations(openapi);
-
-  // 4. Generate tarball
-  const tarball = await generatePackageTarball(
-    packageName,
-    operations,
-    openapi.servers?.[0]?.url || `https://${normalizedPackageName}`,
-  );
-
-  return new Response(tarball, {
-    status: 200,
-    headers: { "Content-Type": "application/octet-stream" },
-  });
-}
-
-async function handleScopedPackageMetadata(
-  scope: string,
-  packageName: string,
-): Promise<Response> {
-  // 1. Fetch OpenAPI spec from the scope domain
-  const openapi = await fetchOpenApiForDomain(scope);
-
-  if (!openapi) {
-    return new Response(
-      JSON.stringify({
-        error: "not_found",
-        reason: "package not found - no OpenAPI spec available for scope",
-      }),
-      {
-        status: 404,
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-  }
-
-  // 2. Get the operation matching the package name
-  const operations = getOperations(openapi);
-  const normalizedPackageName = getOperationId(packageName);
-  const matchingOperation = operations.find(
-    (x) => x.operationId.toLowerCase() === normalizedPackageName.toLowerCase(),
-  );
-  if (!matchingOperation) {
-    return new Response(
-      JSON.stringify({
-        error: "not_found",
-        reason: "operation not found for package name",
-      }),
-      {
-        status: 404,
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-  }
-
-  // 3. Generate metadata for the specific operation
-  const metadata = generateScopedPackageMetadata(
-    scope,
-    packageName,
-    matchingOperation.operation,
-    openapi,
-  );
-
-  return new Response(JSON.stringify(metadata, undefined, 2), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-async function handleScopedPackageTarball(
-  scope: string,
-  packageName: string,
-  version: string,
-): Promise<Response> {
-  // 1. Fetch OpenAPI spec from the scope domain
-  const openapi = await fetchOpenApiForDomain(scope);
-
-  if (!openapi) {
-    return new Response(
-      JSON.stringify({
-        error: "not_found",
-        reason: "package not found - no OpenAPI spec available for scope",
-      }),
-      {
-        status: 404,
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-  }
-
-  // 2. Get the operation matching the package name
-  const operations = getOperations(openapi);
-  const normalizedPackageName = getOperationId(packageName);
-  const matchingOperation = operations.find(
-    (x) => x.operationId.toLowerCase() === normalizedPackageName.toLowerCase(),
-  );
-
-  if (!matchingOperation) {
-    return new Response(
-      JSON.stringify({
-        error: "not_found",
-        reason: "operation not found for package name",
-      }),
-      {
-        status: 404,
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-  }
-
-  // 3. Generate tarball for the specific operation
-  const tarball = await generateScopedPackageTarball(
-    scope,
-    packageName,
-    version,
-    matchingOperation.operation,
-    openapi.servers?.[0]?.url || `https://${scope}`,
-  );
-
-  return new Response(tarball, {
-    status: 200,
-    headers: { "Content-Type": "application/octet-stream" },
   });
 }

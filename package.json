@@ -1,5 +1,9 @@
 {
+  "type": "module",
   "dependencies": {
+    "@cloudflare/workers-types": "^4.20250317.0",
+    "@gera2ld/tarjs": "^0.3.1",
+    "@oapis/npmjz": "npm:npmjz@^1.0.0",
     "tar-stream": "^3.1.7"
   },
   "devDependencies": {
