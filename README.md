@@ -18,6 +18,12 @@ npm i @oapis/{domain}
 npm i @oapis/{domain}__{operationId}
 ```
 
+As an alternative to the above, I created this [cli](https://github.com/janwilmake/oapis.cli) that allows one command to install any OpenAPI as SDK:
+
+```
+npx oapis install {domain}
+```
+
 The proof of concept generates the required files automatically before it serves them such that the installed package is always in sync with the then available OpenAPI spec. This means there is no support for versioning at this point, 1.0.0 is always the most revent version upon installation. If desired, we could add version support through a date system at a later point, having it generate version YYYY.MMDD.HHMM every time someone fetches the available versions and there is a difference from the previous OpenAPI. Another option would be to use the version flag available in the OpenAPI itself, but this may not be updated by all openapi creators.
 
 The proof of concept does not generate valid typescript/javascript code yet. However, my previous experience is that this is quite straightforward to do for the majority of OpenAPIs.
