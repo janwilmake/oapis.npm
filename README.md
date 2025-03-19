@@ -32,3 +32,4 @@ TODO:
 - make it deno-compatible as well, including for deno's URL-import feature.
 - make it browser-compatible as well (script src="https://js.oapis.org/{domain}/{operationId}.js")
 - add versioning and caching, ensuring to check the openapi.json for a changed version if needed. if needed also auto-bump version number (likely not needed).
+- introduce ratelimit to prevent abuse
